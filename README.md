@@ -1,2 +1,2 @@
 # r-scripts
-"Repository for sharing my R scripts
+Repository for sharing my R scripts
