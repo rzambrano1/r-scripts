@@ -1,9 +1,9 @@
 ######################################################
 ## REMAINING UNOBLIGATED & AVAILABLE BALANCES TABLE ##
 ## Author:                      Ricardo Zambrano    ##
-## Version:                     0.1                 ##
+## Version:                     0.2                 ##
 ## Date Created:                Dec/16/2021         ##
-## Most Recent Review Date:     Dec/16/2021         ##
+## Most Recent Review Date:     Dec/27/2021         ##
 ## Rationale:                   Current Version     ##
 ######################################################
 
@@ -12,6 +12,11 @@
 ### (cont.) - from the current quarter reporting folder                                 ###
 ### The output of the module is the "Remaining Unobligated and Available Balances of    ###
 ### Resources" table in tibble and csv file format                                      ###
+###########################################################################################
+
+###########################################################################################
+### NOTES: This version includes a sub-class of TAS. The new class is meant to  substi- ###
+### tute TASs that need further breakdown into Equity and Admin                         ###
 ###########################################################################################
 
 ###############
@@ -25,6 +30,8 @@ library(R6) # Reference Class for OOP similar to OOP languages
 library(Dict) # Dictionary data type
 library(stringr) # Regular expressions
 library(htmlwidgets)
+library(lobstr) # For testing bindings of environments. In particular, for checking bindings of class TAS and subclass derivedTAS
+
 
 #############################
 ## ENVIRONMENT PREPARATION ##
@@ -95,7 +102,8 @@ endQuarter <- function(yr,mnth,dy,NormalOps=TRUE) {
   return(quarterEndDate)
 }
 
-endQuarter(currYear,currMonth,currDay)
+endQuarter(currYear,currMonth,currDay,NormalOps=TRUE)
+#endQuarter(currYear,currMonth,currDay,NormalOps=FALSE) # Only enable to test other quarters
 
 # endQuarter(2012,03,31,NormalOps = FALSE) - This is a test - currently commented out
 
@@ -155,6 +163,12 @@ filename <- "sf133.xlsx"
 path133 <- paste0(basePath1,basePath2,filename)
 #path133
 
+
+# The following statements set up the path to locate the framesFinReporting file.
+filename2 <- "framesFinReporting.xlsx"
+pathDerTAS <- paste0(basePath1,basePath2,filename2)
+#pathDerTAS
+
 ##################
 ## Data Request ##
 ##################
@@ -162,11 +176,15 @@ path133 <- paste0(basePath1,basePath2,filename)
 # The following statements upload the current reporting quarter SF-133 Report, an untidy MS Excel file
 
 sf133sheets <- excel_sheets(path133) # Creates a list of the worksheets in the SF-133
-dataSheetName <- "SF133 Detail" # Sets the worksheet that contains the data used in the Appropriators Report
+dataSheetName <- "SF133 Detail" # Sets the worksheet that contains the data used in the Appropriators Report [[Check if this worksheet name is consistent]]
 indxDataSheet <- match(dataSheetName,sf133sheets)
 sf133Raw <- read_excel(path133,sheet=indxDataSheet,col_names=FALSE,col_types="text")
 
 #View(sf133Raw)
+
+# The following statements read the framesFinReporting file. The file consists of a collection of TASs that require further breakdown
+
+framesFinReporting <- read_excel(pathDerTAS,sheet=indxDataSheet,col_names=FALSE,col_types="text")
 
 #############################################
 ## Data Exploration, Testing, and Cleaning ##
@@ -249,6 +267,50 @@ TAS <- R6Class("TAS", list(
 )
 )
 
+# The following is a derived class (sub-class) that inherits from the TAS class. Its purpose is to create a class to
+# accommodate TAS that need further breakdown into Equity and Admin
+
+derivedTAS <- R6Class("derivedClass",
+                      #Creates a derived class
+                      inherit = TAS,
+                      
+                      public = list(
+                        fundName = NA,
+                        initialize = function(classTAS,fundName) {
+                          super$initialize(numberTAS=paste0(classTAS$numberTAS,"_",fundName),nameTAS=classTAS$nameTAS, quarterTAS=classTAS$quarterTAS,
+                                           fyTAS=classTAS$fyTAS, linesTAS = classTAS$linesTAS$clone(deep=TRUE),
+                                           fyAppropriation = classTAS$fyAppropriation,fyEndAvail = classTAS$fyEndAvail,resource=classTAS$resource,
+                                           obligated=classTAS$obligated,unobligated=classTAS$unobligated)
+                          stopifnot(class(classTAS)[[1]] == "TAS")
+                          stopifnot(fundName == "Equity" | fundName == "Admin")
+                          
+                          self$fundName <- fundName
+                          
+                        },
+                        print = function(...) {
+                          cat("========================================================================================================","\n")
+                          cat("Broken Down TAS: \n")
+                          cat("Fund: ", self$fundName,"\n",sep="")
+                          cat("========================================================================================================","\n")
+                          cat("  TAS Number:          ", self$numberTAS, "\n", sep = "")
+                          cat("  Account Name:        ", self$nameTAS, "\n", sep = "")
+                          cat("  Reporting Period:    ", "FY",self$fyTAS,"-Q",self$quarterTAS, "\n", sep = "")
+                          cat("  FY Appropriation:    ",self$fyAppropriation,"\n",sep="")
+                          cat("  FY End Availability: ",self$fyEndAvail,"\n",sep="")
+                          cat("========================================================================================================","\n")
+                          for (indx in 1:self$linesTAS$length) {
+                            print(paste0("Line ",self$linesTAS$keys[indx]," = ",format(self$linesTAS$values[indx],scientific=FALSE,big.mark = ",")))
+                          }
+                          cat("========================================================================================================","\n")
+                          cat("     Resource    = $ ",format(self$resource,scientific=FALSE,big.mark=","),"\n",sep="")
+                          cat("     Obligated   = $ ",format(self$obligated,scientific=FALSE,big.mark=","),"\n",sep="")
+                          cat("     Unobligated = $ ",format(self$unobligated,scientific=FALSE,big.mark=","),"\n",sep="")
+                          cat("========================================================================================================","\n")
+                          invisible(self)
+                        }
+                      )              
+)
+
 updateTAS <- function(taSymbol) {
   # Takes a TAS object
   # Updates the TAS object's attributes by using the class' methods
@@ -285,6 +347,9 @@ findQrColPos <- function(sf133File) {
   currRow <- 1
   while (findFlag==FALSE & currRow < dfRows) {
     lineCols <- rep(NA,dfCols)
+    if (currRow == dfRows-1) {
+      stop("No reporting quarter labels found in SF-133 file. Label columns manually, save the modified SF-133 file, and load the file again")
+    }
     for (indx in 1:dfCols) {
       lineCols[indx] <- sf133File[currRow,indx]
     }
@@ -384,16 +449,157 @@ checkTASBalance <- function(aTAS) {
   return(c(format(balance,scientific=FALSE,big.mark=","),balTAS))
 }
 
+breakDownTAS <- function(framesFinRep) {
+  ## Assumes a tibble with TASs that have been break down into Equity and Admin funds
+  ## Returns derived TAS objects for each of the aforementioned funds
+  
+  # The following statements read  through the framesFinReporting file and locate TASs in the file as well as positions of Equity and Admin features
+  rwTot <- nrow(framesFinRep)
+  colTot <- ncol(framesFinRep)
+  tasNamePos <- c()
+  inFileTASs <- c()
+  equityPos <- NA
+  adminPos <- NA
+  
+  for (indx in 1:rwTot) {
+    if (str_sub(framesFinRep[[indx,1]],1,3) == "TAS") {
+      rw <- indx #as.numeric(indx)
+      tasNamePos <- c(tasNamePos,rw)
+    }
+  }
+  
+  for (indx in seq(tasNamePos)) {
+    inFileTASs <- c(inFileTASs,str_sub(framesFinRep[[tasNamePos[[indx]],1]],5,str_length(framesFinRep[[tasNamePos[[indx]],1]])))
+  }
+  
+  eqtFlag <- TRUE
+  currRw <- 1
+  while (isTRUE(eqtFlag) & currRw < rwTot) {
+    if (currRw == rwTot -1) {
+      stop("No columns with label 'Equity' found")
+    }
+    for (indx in seq(colTot)) {
+      if (ifelse(is.na(framesFinRep[[currRw,indx]]),0,framesFinRep[[currRw,indx]])=="Equity") {
+        equityPos <- indx
+        eqtFlag <- FALSE
+      }
+    }
+    currRw <- currRw + 1
+  }
+  
+  adminFlag <- TRUE
+  currRw <- 1
+  while (isTRUE(adminFlag) & currRw < rwTot) {
+    if (currRw == rwTot -1) {
+      stop("No columns with label 'Admin' found")
+    }
+    for (indx in seq(colTot)) {
+      if (ifelse(is.na(framesFinRep[[currRw,indx]]),0,framesFinRep[[currRw,indx]])=="Admin") {
+        adminPos <- indx
+        adminFlag <- FALSE
+      }
+    }
+    currRw <- currRw + 1
+  }  
+  
+  inFileTasObjct <- vector('character',length=length(inFileTASs))
+  for (indx in seq_along(inFileTasObjct)) {
+    nameTAS <- paste0("tas",str_replace_all(inFileTASs[[indx]],c("-"="_")),"_000")
+    inFileTasObjct[[indx]] <- nameTAS
+  }
+  
+  # The following statements create derived TAS class objects with the information in framesFinReporting
+  
+  # This loop initializes the Equity TAS sub class
+  for (indx in seq_along(inFileTasObjct)) {
+    eval(parse(text=paste0(inFileTasObjct[[indx]],"_Equity <<- derivedTAS$new(",inFileTasObjct[[indx]],",fundName = 'Equity')")))
+  }
+  
+  # This loop reset the Equity TAS sub class
+  for (indx in seq_along(inFileTasObjct)) {
+    for (jndx in eval(parse(text=paste0("1:length(",inFileTasObjct[[indx]],"_Equity$linesTAS$keys)")))) {
+      eval(parse(text=paste0(inFileTasObjct[[indx]],"_Equity$linesTAS[",inFileTasObjct[[indx]],"_Equity$linesTAS$keys","[[",jndx,"]]","] <<- 0")))
+    }
+    eval(parse(text=paste0("updateTAS(",inFileTasObjct[[indx]],"_Equity)")))
+  }
+  
+  # This loop update the lines with the broken down amounts for the Equity sub class
+  for (indx in seq_along(inFileTasObjct)) {
+    tryCatch(
+      {
+        for (jndx in eval(parse(text=paste0("(tasNamePos[[indx]]+1):(tasNamePos[[indx+1]]-1)")))) {
+          if (isTRUE(str_detect(framesFinRep[[jndx,1]],"^[1234567890]{4}"))) {
+            eval(parse(text=paste0(inFileTasObjct[[indx]],"_Equity$linesTAS['",framesFinRep[[jndx,1]],"'] <<- ",framesFinRep[[jndx,equityPos]])))
+          }
+          #print(paste0(inFileTasObjct[[indx]],"_Equity$linesTAS[",inFileTasObjct[[indx]],"_Equity$linesTAS$keys","[[",jndx,"]]","] <- 0"))
+        }
+        #print(paste0("from ",tasNamePos[[indx]]+1," to ",tasNamePos[[indx+1]]-1))
+        #print("went without error handling")
+      },
+      error = function(e) {
+        for (jndx in eval(parse(text=paste0("(tasNamePos[[indx]]+1):(rwTot)")))) {
+          if (isTRUE(str_detect(framesFinRep[[jndx,1]],"^[1234567890]{4}"))) {
+            eval(parse(text=paste0(inFileTasObjct[[indx]],"_Equity$linesTAS['",framesFinRep[[jndx,1]],"'] <<- ",framesFinRep[[jndx,equityPos]])))
+          }
+          #print(paste0(inFileTasObjct[[indx]],"_Equity$linesTAS[",inFileTasObjct[[indx]],"_Equity$linesTAS$keys","[[",jndx,"]]","] <- 0"))
+        }
+        #print(paste0("from ",tasNamePos[[indx]]+1," to ",rwTot))
+        #print("went through the error handling statement") 
+      }
+    )
+    eval(parse(text=paste0("updateTAS(",inFileTasObjct[[indx]],"_Equity)")))
+  }
+  
+  # This loop initializes the Admin TAS sub class
+  for (indx in seq_along(inFileTasObjct)) {
+    eval(parse(text=paste0(inFileTasObjct[[indx]],"_Admin <<- derivedTAS$new(",inFileTasObjct[[indx]],",fundName = 'Admin')")))
+  }
+  
+  # This loop reset the Admin TAS sub class
+  for (indx in seq_along(inFileTasObjct)) {
+    for (jndx in eval(parse(text=paste0("1:length(",inFileTasObjct[[indx]],"_Admin$linesTAS$keys)")))) {
+      eval(parse(text=paste0(inFileTasObjct[[indx]],"_Admin$linesTAS[",inFileTasObjct[[indx]],"_Admin$linesTAS$keys","[[",jndx,"]]","] <<- 0")))
+    }
+    eval(parse(text=paste0("updateTAS(",inFileTasObjct[[indx]],"_Admin)")))
+  }
+  
+  # This loop update the lines with the broken down amounts for the Admin sub class
+  for (indx in seq_along(inFileTasObjct)) {
+    tryCatch(
+      {
+        for (jndx in eval(parse(text=paste0("(tasNamePos[[indx]]+1):(tasNamePos[[indx+1]]-1)")))) {
+          if (isTRUE(str_detect(framesFinRep[[jndx,1]],"^[1234567890]{4}"))) {
+            eval(parse(text=paste0(inFileTasObjct[[indx]],"_Admin$linesTAS['",framesFinRep[[jndx,1]],"'] <<- ",framesFinRep[[jndx,adminPos]])))
+          }
+        }
+      },
+      error = function(e) {
+        for (jndx in eval(parse(text=paste0("(tasNamePos[[indx]]+1):(rwTot)")))) {
+          if (isTRUE(str_detect(framesFinRep[[jndx,1]],"^[1234567890]{4}"))) {
+            eval(parse(text=paste0(inFileTasObjct[[indx]],"_Admin$linesTAS['",framesFinRep[[jndx,1]],"'] <<- ",framesFinRep[[jndx,adminPos]])))
+          }
+        }
+      }
+    )
+    eval(parse(text=paste0("updateTAS(",inFileTasObjct[[indx]],"_Admin)")))
+  }
+  return(inFileTasObjct)
+}
+
+breakDownTAS(framesFinReporting)
+
 # This statement loads the TASs currently used in the Appropriators Report
 currUsedTASs <- c(tas077_2019_2021_0110_000,
                   tas077_X_0110_000,
                   tas077_2020_2022_0110_000,
                   tas077_2020_2023_0110_000,
-                  tas077_2020_2022_4483_000,
+                  tas077_2020_2022_4483_000_Equity,
                   tas077_2021_2023_0110_000,
-                  tas077_2021_2023_4483_000,
+                  tas077_2021_2023_4483_000_Equity,
                   tas077_X_4483_000,
+                  tas077_2020_2022_4483_000_Admin,
                   tas077_2020_2024_4483_000,
+                  tas077_2021_2023_4483_000_Admin,
                   tas077_2021_2025_4483_000)
 
 currUsedTASs
@@ -440,9 +646,6 @@ remBalsTbl <- function(...) {
 }
 
 remBalsTbl(currUsedTASs)
-
-
-# Pending task construct a class brkndwnTAS to split Admin and Eqty. Depends on whether the Equity and Admin funds will remain binded or not on FY2022
 
 ################################
 ## Data Analysis and Modeling ##
